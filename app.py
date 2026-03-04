@@ -101,7 +101,8 @@ class TextIO:
 
     @staticmethod
     def write_text(file_path: Path, content: str, encoding: str) -> None:
-        file_path.write_text(content, encoding=encoding)
+        with file_path.open("w", encoding=encoding, newline="") as f:
+            f.write(content)
 
 
 class ProcessorWorker(QObject):
@@ -142,10 +143,11 @@ class ProcessorWorker(QObject):
                 continue
 
             flags = 0 if rule.case_sensitive else re.IGNORECASE
+            has_word_chars = bool(re.search(r"\w", rule.find))
             if rule.use_regex:
                 pattern_text = rule.find
-                if rule.whole_word:
-                    pattern_text = rf"\b(?:{pattern_text})\b"
+                if rule.whole_word and has_word_chars:
+                    pattern_text = rf"(?<!\w)(?:{pattern_text})(?!\w)"
                 try:
                     pattern = re.compile(pattern_text, flags)
                     updated, count = pattern.subn(rule.replace, current)
@@ -153,8 +155,8 @@ class ProcessorWorker(QObject):
                     raise ValueError(f"Regex hatası ({rule.find}): {exc}") from exc
             else:
                 pattern_text = re.escape(rule.find)
-                if rule.whole_word:
-                    pattern_text = rf"\b{pattern_text}\b"
+                if rule.whole_word and has_word_chars:
+                    pattern_text = rf"(?<!\w){pattern_text}(?!\w)"
                 pattern = re.compile(pattern_text, flags)
                 updated, count = pattern.subn(rule.replace, current)
 
