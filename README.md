@@ -1,3 +1,17 @@
+python -m venv .venv
+.\.venv\Scripts\activate
+---------------------------------AYRI BÖLMEDE AÇMAK İÇİN
+
+
+BAĞIMLILIKLAR İÇİN ÖNCE BUNU ÇALIŞTIR
+----------------------------------------------
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -c "import PySide6; print(PySide6.__version__)"
+
+
+
+
 # TextMultiReplacer Pro
 
 Windows üzerinde çoklu metin dosyalarında, birden fazla dönüşüm kuralını tek tıklama ile uygulayan profesyonel masaüstü uygulaması.

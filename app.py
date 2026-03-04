@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import sys
+import html
+import difflib
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -206,8 +208,8 @@ class RuleRow(QWidget):
         self.setObjectName("RuleRow")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
 
         self.enabled_cb = QCheckBox()
         self.enabled_cb.setChecked(True)
@@ -237,7 +239,7 @@ class RuleRow(QWidget):
         self.remove_btn = QPushButton("Sil")
         self.remove_btn.setProperty("danger", True)
         self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self))
-        self.remove_btn.setFixedWidth(62)
+        self.remove_btn.setFixedWidth(56)
         layout.addWidget(self.remove_btn)
 
     def to_rule(self) -> ReplacementRule:
@@ -315,8 +317,6 @@ class MainWindow(QMainWindow):
 
         self.act_start = QAction("Uygula", self)
         self.act_start.setShortcut(QKeySequence("Ctrl+R"))
-        self.act_preview = QAction("Önizleme", self)
-        self.act_preview.setShortcut(QKeySequence("Ctrl+P"))
 
         self.act_about = QAction("Hakkında", self)
 
@@ -339,11 +339,20 @@ class MainWindow(QMainWindow):
         self.log_edit.setReadOnly(True)
         self.diff_edit = QTextEdit()
         self.diff_edit.setReadOnly(True)
+        self.file_preview_edit = QTextEdit()
+        self.file_preview_edit.setReadOnly(True)
         self.bottom_tabs.addTab(self.log_edit, "İşlem Günlüğü")
         self.bottom_tabs.addTab(self.diff_edit, "Diff Önizleme")
+        self.bottom_tabs.addTab(self.file_preview_edit, "Dosya Önizleme")
 
-        central_layout.addWidget(top_split, 3)
-        central_layout.addWidget(self.bottom_tabs, 2)
+        self.main_splitter = QSplitter(Qt.Vertical)
+        self.main_splitter.addWidget(top_split)
+        self.main_splitter.addWidget(self.bottom_tabs)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setSizes([520, 280])
+
+        central_layout.addWidget(self.main_splitter, 1)
         self.setCentralWidget(central)
 
         self.setStatusBar(QStatusBar())
@@ -362,7 +371,6 @@ class MainWindow(QMainWindow):
 
         menu_run = self.menuBar().addMenu("İşlem")
         menu_run.addAction(self.act_start)
-        menu_run.addAction(self.act_preview)
 
         menu_help = self.menuBar().addMenu("Yardım")
         menu_help.addAction(self.act_about)
@@ -434,7 +442,7 @@ class MainWindow(QMainWindow):
         self.rules_host = QWidget()
         self.rules_layout = QVBoxLayout(self.rules_host)
         self.rules_layout.setContentsMargins(6, 6, 6, 6)
-        self.rules_layout.setSpacing(6)
+        self.rules_layout.setSpacing(4)
         self.rules_layout.addStretch(1)
         self.rules_scroll.setWidget(self.rules_host)
         layout.addWidget(self.rules_scroll, 1)
@@ -450,13 +458,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         self.cb_backup = QCheckBox("Değişen dosyaların .bak yedeğini al")
-        self.cb_backup.setChecked(True)
+        self.cb_backup.setChecked(False)
 
         self.cb_dry_run = QCheckBox("Dry-run (dosyaya yazmadan simüle et)")
         self.cb_remember = QCheckBox("Kapanışta son oturumu hatırla")
         self.cb_remember.setChecked(True)
 
-        self.btn_preview = QPushButton("Seçili Dosyada Önizleme")
         self.btn_restore = QPushButton(".bak Yedeklerinden Geri Yükle")
 
         self.btn_run = QPushButton("Tüm Değişiklikleri Uygula")
@@ -474,7 +481,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cb_dry_run)
         layout.addWidget(self.cb_remember)
         layout.addWidget(self._line())
-        layout.addWidget(self.btn_preview)
         layout.addWidget(self.btn_restore)
         layout.addWidget(self._line())
         layout.addWidget(self.btn_run)
@@ -503,7 +509,6 @@ class MainWindow(QMainWindow):
         self.btn_import_rules.clicked.connect(self.import_rules)
 
         self.btn_run.clicked.connect(self.start_processing)
-        self.btn_preview.clicked.connect(self.preview_selected_file)
         self.btn_restore.clicked.connect(self.restore_backups)
 
         self.act_export_rules.triggered.connect(self.export_rules)
@@ -511,11 +516,10 @@ class MainWindow(QMainWindow):
         self.act_save_session.triggered.connect(self.save_session)
         self.act_exit.triggered.connect(self.close)
         self.act_start.triggered.connect(self.start_processing)
-        self.act_preview.triggered.connect(self.preview_selected_file)
         self.act_about.triggered.connect(self.show_about)
 
         self.file_list.files_dropped.connect(self.add_paths)
-        self.file_list.itemSelectionChanged.connect(self.preview_selected_file)
+        self.file_list.itemSelectionChanged.connect(self.on_file_selection_changed)
 
     def _apply_style(self) -> None:
         self.setFont(QFont("Segoe UI", 10))
@@ -523,99 +527,116 @@ class MainWindow(QMainWindow):
             """
             QMainWindow {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0b1220, stop:0.6 #121b2f, stop:1 #1a2237);
+                    stop:0 #f3f6fb, stop:0.55 #edf2f8, stop:1 #e8eef6);
             }
             QMenuBar, QMenu {
-                background-color: #0f1729;
-                color: #d8e0ee;
+                background-color: #e6ebf2;
+                color: #1f2937;
+                border: 1px solid #c9d4e5;
+            }
+            QMenu::item:selected {
+                background-color: #bfdbfe;
+                color: #0f172a;
             }
             QWidget {
-                color: #d8e0ee;
+                color: #1f2937;
             }
             QGroupBox {
-                border: 1px solid #34435f;
+                border: 1px solid #c7d3e6;
                 border-radius: 10px;
                 margin-top: 10px;
-                padding: 10px;
-                background-color: rgba(11, 18, 32, 0.68);
+                padding: 9px;
+                background-color: rgba(255, 255, 255, 0.9);
                 font-weight: 600;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 4px;
-                color: #9ec0ff;
+                color: #334155;
             }
             QLineEdit, QTextEdit, QListWidget, QScrollArea, QTabWidget::pane {
-                border: 1px solid #34435f;
+                border: 1px solid #c7d3e6;
                 border-radius: 8px;
-                background-color: #10182b;
-                selection-background-color: #2d5b9f;
+                background-color: #fbfdff;
+                selection-background-color: #bfdbfe;
+                color: #0f172a;
+            }
+            QListWidget {
+                alternate-background-color: #f2f6fc;
             }
             QListWidget::item {
-                padding: 6px 8px;
-                border-bottom: 1px solid #1f2b43;
+                padding: 3px 6px;
+                color: #0f172a;
+            }
+            QListWidget::item:hover {
+                background-color: #dbeafe;
+                color: #0f172a;
             }
             QListWidget::item:selected {
-                background-color: #244477;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QPushButton {
-                background-color: #223250;
-                border: 1px solid #35517d;
+                background-color: #e2e8f0;
+                border: 1px solid #c0cedf;
                 border-radius: 8px;
-                padding: 7px 10px;
-                color: #dce7fb;
+                padding: 6px 10px;
+                color: #0f172a;
                 font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #2b4470;
+                background-color: #d3deeb;
             }
             QPushButton[primary="true"] {
-                background-color: #0ea5a2;
-                border-color: #1dd6d2;
-                color: #062321;
+                background-color: #0f766e;
+                border-color: #0f766e;
+                color: #ffffff;
                 font-size: 14px;
             }
             QPushButton[primary="true"]:hover {
-                background-color: #14bbb7;
+                background-color: #0d6861;
             }
             QPushButton[danger="true"] {
-                background-color: #5c2630;
-                border-color: #9f3a4d;
+                background-color: #fee2e2;
+                border-color: #fca5a5;
+                color: #7f1d1d;
             }
             QProgressBar {
-                border: 1px solid #34435f;
+                border: 1px solid #c7d3e6;
                 border-radius: 7px;
                 text-align: center;
-                background: #0f1729;
+                color: #1f2937;
+                background: #eef3f9;
                 min-height: 20px;
             }
             QProgressBar::chunk {
                 border-radius: 6px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #0ea5a2, stop:1 #54f4f1);
+                    stop:0 #0f766e, stop:1 #14b8a6);
             }
             QCheckBox {
                 spacing: 8px;
             }
             QLabel#HintLabel {
-                color: #9ab1d9;
-                background-color: rgba(27, 42, 72, 0.3);
-                border: 1px solid #243557;
+                color: #475569;
+                background-color: #f3f7fd;
+                border: 1px solid #d2ddec;
                 border-radius: 8px;
                 padding: 8px;
             }
             QTabBar::tab {
-                background: #15203a;
-                border: 1px solid #34435f;
+                background: #e8eef7;
+                border: 1px solid #c7d3e6;
                 border-top-left-radius: 7px;
                 border-top-right-radius: 7px;
                 padding: 6px 10px;
                 margin-right: 2px;
+                color: #334155;
             }
             QTabBar::tab:selected {
-                background: #20365f;
-                color: #e9f2ff;
+                background: #ffffff;
+                color: #0f172a;
             }
             """
         )
@@ -723,6 +744,11 @@ class MainWindow(QMainWindow):
     def add_rule(self, preset: ReplacementRule | None = None) -> None:
         row = RuleRow()
         row.remove_requested.connect(self.remove_rule)
+        row.enabled_cb.toggled.connect(self._on_rules_changed)
+        row.find_edit.textChanged.connect(self._on_rules_changed)
+        row.replace_edit.textChanged.connect(self.preview_selected_file)
+        row.regex_cb.toggled.connect(self.preview_selected_file)
+        row.case_cb.toggled.connect(self.preview_selected_file)
         if preset:
             row.from_rule(preset)
 
@@ -789,10 +815,59 @@ class MainWindow(QMainWindow):
 
         self.log(f"Kural seti yüklendi: {source}")
 
+    def on_file_selection_changed(self) -> None:
+        self.preview_file_content()
+        self.preview_selected_file()
+
+    def preview_file_content(self) -> None:
+        current = self.file_list.currentItem()
+        if not current:
+            self.file_preview_edit.setPlainText("Dosya önizleme için listeden bir dosya seçin.")
+            return
+
+        file_path = Path(current.text())
+        if not file_path.exists():
+            self.file_preview_edit.setPlainText("Dosya mevcut değil.")
+            return
+
+        try:
+            content, encoding = TextIO.read_text(file_path)
+            if len(content) > 400_000:
+                content = content[:400_000] + "\n\n... içerik uzun olduğu için kısaltıldı ..."
+            self.file_preview_edit.setPlainText(content)
+            self.file_preview_edit.setToolTip(f"Kodlama: {encoding}")
+        except Exception as exc:
+            self.file_preview_edit.setPlainText(f"Dosya okunamadı: {exc}")
+
+    def render_diff_html(self, diff_lines: List[str]) -> str:
+        html_lines: List[str] = [
+            "<pre style='font-family:Consolas, "
+            "\"Cascadia Mono\", "
+            "monospace; font-size:12px; line-height:1.38; margin:0;'>"
+        ]
+
+        for line in diff_lines:
+            escaped = html.escape(line)
+            style = "color:#334155;"
+
+            if line.startswith("@@"):
+                style = "color:#6d28d9; background:#f5f3ff; font-weight:600;"
+            elif line.startswith("---") or line.startswith("+++"):
+                style = "color:#1e293b; background:#e2e8f0; font-weight:600;"
+            elif line.startswith("+") and not line.startswith("+++"):
+                style = "color:#14532d; background:#dcfce7;"
+            elif line.startswith("-") and not line.startswith("---"):
+                style = "color:#7f1d1d; background:#fee2e2;"
+
+            html_lines.append(f"<span style='{style}'>{escaped}</span>")
+
+        html_lines.append("</pre>")
+        return "".join(html_lines)
+
     def preview_selected_file(self) -> None:
         current = self.file_list.currentItem()
         if not current:
-            self.diff_edit.setPlainText("Önizleme için listeden bir dosya seçin.")
+            self.diff_edit.setPlainText("Diff önizleme için listeden bir dosya seçin.")
             return
 
         rules = self.active_rules()
@@ -806,8 +881,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            import difflib
-
             original, _ = TextIO.read_text(file_path)
             updated, _ = ProcessorWorker.apply_rules(original, rules)
             if original == updated:
@@ -828,7 +901,7 @@ class MainWindow(QMainWindow):
                 diff_lines = diff_lines[:2000]
                 diff_lines.append("\n... diff çıktısı kesildi (çok uzun) ...\n")
 
-            self.diff_edit.setPlainText("".join(diff_lines))
+            self.diff_edit.setHtml(self.render_diff_html(diff_lines))
             self.bottom_tabs.setCurrentWidget(self.diff_edit)
         except Exception as exc:
             self.diff_edit.setPlainText(f"Önizleme hatası: {exc}")
@@ -968,7 +1041,7 @@ class MainWindow(QMainWindow):
         self.resize(w, h)
 
         opts = data.get("options", {})
-        self.cb_backup.setChecked(bool(opts.get("backup", True)))
+        self.cb_backup.setChecked(bool(opts.get("backup", False)))
         self.cb_dry_run.setChecked(bool(opts.get("dry_run", False)))
         self.cb_remember.setChecked(bool(opts.get("remember", True)))
         self.cb_recursive.setChecked(bool(opts.get("recursive", True)))
@@ -988,7 +1061,13 @@ class MainWindow(QMainWindow):
             self.add_rule(ReplacementRule())
 
         self._update_file_counter()
+        self.preview_file_content()
+        self.preview_selected_file()
         self.log("Son oturum yüklendi.")
+
+    def _on_rules_changed(self) -> None:
+        self._update_rule_counter()
+        self.preview_selected_file()
 
     def closeEvent(self, event):
         if self.cb_remember.isChecked():
