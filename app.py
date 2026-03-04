@@ -572,11 +572,15 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         self.btn_add_rule = QPushButton("+ Kural Ekle")
         self.btn_clear_rules = QPushButton("Kuralları Temizle")
+        self.cb_import_append = QCheckBox("Ekle")
+        self.cb_import_append.setChecked(False)
+        self.cb_import_append.setToolTip("Seçiliyse içe aktarılan kurallar mevcutların üstüne eklenir")
         self.btn_import_rules = QPushButton("İçe Aktar")
         self.btn_export_rules = QPushButton("Dışa Aktar")
         toolbar.addWidget(self.btn_add_rule)
         toolbar.addWidget(self.btn_clear_rules)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.cb_import_append)
         toolbar.addWidget(self.btn_import_rules)
         toolbar.addWidget(self.btn_export_rules)
         layout.addLayout(toolbar)
@@ -1021,11 +1025,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_NAME, f"Kural seti okunamadı:\n{exc}")
             return
 
-        self.clear_rules()
+        append_mode = self.cb_import_append.isChecked()
+        if not append_mode:
+            self.clear_rules()
+
         for rule in parsed:
             self.add_rule(rule)
 
-        self.log(f"Kural seti yüklendi: {source}")
+        mode_text = "eklendi" if append_mode else "değiştirildi"
+        self.log(f"Kural seti {mode_text}: {source}")
 
     def on_file_selection_changed(self) -> None:
         self.preview_file_content()
@@ -1261,6 +1269,7 @@ class MainWindow(QMainWindow):
                 "remember": self.cb_remember.isChecked(),
                 "recursive": self.cb_recursive.isChecked(),
                 "extensions": self.ext_filter_edit.text(),
+                "import_append": self.cb_import_append.isChecked(),
             },
             "dialog_dirs": self.dialog_dirs,
             "files": files,
@@ -1286,6 +1295,7 @@ class MainWindow(QMainWindow):
         self.cb_dry_run.setChecked(bool(opts.get("dry_run", False)))
         self.cb_remember.setChecked(bool(opts.get("remember", True)))
         self.cb_recursive.setChecked(bool(opts.get("recursive", True)))
+        self.cb_import_append.setChecked(bool(opts.get("import_append", False)))
         self.ext_filter_edit.setText(opts.get("extensions", self.ext_filter_edit.text()))
 
         loaded_dirs = data.get("dialog_dirs", {})
