@@ -62,6 +62,7 @@ class ReplacementRule:
     replace: str = ""
     use_regex: bool = False
     case_sensitive: bool = False
+    whole_word: bool = False
     enabled: bool = True
 
 
@@ -135,19 +136,22 @@ class ProcessorWorker(QObject):
             if not rule.enabled or not rule.find:
                 continue
 
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
             if rule.use_regex:
-                flags = 0 if rule.case_sensitive else re.IGNORECASE
+                pattern_text = rule.find
+                if rule.whole_word:
+                    pattern_text = rf"\b(?:{pattern_text})\b"
                 try:
-                    updated, count = re.subn(rule.find, rule.replace, current, flags=flags)
+                    pattern = re.compile(pattern_text, flags)
+                    updated, count = pattern.subn(rule.replace, current)
                 except re.error as exc:
                     raise ValueError(f"Regex hatası ({rule.find}): {exc}") from exc
             else:
-                if rule.case_sensitive:
-                    count = current.count(rule.find)
-                    updated = current.replace(rule.find, rule.replace)
-                else:
-                    pattern = re.compile(re.escape(rule.find), re.IGNORECASE)
-                    updated, count = pattern.subn(rule.replace, current)
+                pattern_text = re.escape(rule.find)
+                if rule.whole_word:
+                    pattern_text = rf"\b{pattern_text}\b"
+                pattern = re.compile(pattern_text, flags)
+                updated, count = pattern.subn(rule.replace, current)
 
             current = updated
             total_replacements += count
@@ -233,13 +237,17 @@ class RuleRow(QWidget):
         self.regex_cb = QCheckBox("Regex")
         self.case_cb = QCheckBox("Aa")
         self.case_cb.setToolTip("Büyük/küçük harfe duyarlı")
+        self.word_cb = QCheckBox("W")
+        self.word_cb.setToolTip("Sadece tam kelime eşleşmesi")
         layout.addWidget(self.regex_cb)
         layout.addWidget(self.case_cb)
+        layout.addWidget(self.word_cb)
 
-        self.remove_btn = QPushButton("Sil")
+        self.remove_btn = QPushButton("x")
+        self.remove_btn.setToolTip("Kuralı sil")
         self.remove_btn.setProperty("danger", True)
         self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self))
-        self.remove_btn.setFixedWidth(56)
+        self.remove_btn.setFixedSize(28, 24)
         layout.addWidget(self.remove_btn)
 
     def to_rule(self) -> ReplacementRule:
@@ -248,6 +256,7 @@ class RuleRow(QWidget):
             replace=self.replace_edit.text(),
             use_regex=self.regex_cb.isChecked(),
             case_sensitive=self.case_cb.isChecked(),
+            whole_word=self.word_cb.isChecked(),
             enabled=self.enabled_cb.isChecked(),
         )
 
@@ -256,11 +265,14 @@ class RuleRow(QWidget):
         self.replace_edit.setText(rule.replace)
         self.regex_cb.setChecked(rule.use_regex)
         self.case_cb.setChecked(rule.case_sensitive)
+        self.word_cb.setChecked(getattr(rule, "whole_word", False))
         self.enabled_cb.setChecked(rule.enabled)
 
 
 class FileListWidget(QListWidget):
     files_dropped = Signal(list)
+    preview_requested = Signal(str)
+    diff_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -290,15 +302,36 @@ class FileListWidget(QListWidget):
             self.files_dropped.emit(files)
         event.acceptProposedAction()
 
+    def mousePressEvent(self, event):
+        point = event.position().toPoint()
+        item = self.itemAt(point)
+        if event.button() == Qt.RightButton and item:
+            self.setCurrentItem(item)
+            self.preview_requested.emit(item.text())
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        point = event.position().toPoint()
+        item = self.itemAt(point)
+        if event.button() == Qt.LeftButton and item:
+            self.setCurrentItem(item)
+            self.diff_requested.emit(item.text())
+        super().mouseDoubleClickEvent(event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.store = SessionStore()
-        self.rule_rows: List[RuleRow] = []
         self.known_files: set[str] = set()
         self.worker_thread: QThread | None = None
         self.worker: ProcessorWorker | None = None
+        self.dialog_dirs: dict[str, str] = {
+            "add_files": "",
+            "add_folder": "",
+            "import_rules": "",
+            "export_rules": "",
+        }
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1200, 760)
@@ -438,14 +471,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
 
         self.rules_scroll = QScrollArea()
-        self.rules_scroll.setWidgetResizable(True)
-        self.rules_host = QWidget()
-        self.rules_layout = QVBoxLayout(self.rules_host)
-        self.rules_layout.setContentsMargins(6, 6, 6, 6)
-        self.rules_layout.setSpacing(4)
-        self.rules_layout.addStretch(1)
-        self.rules_scroll.setWidget(self.rules_host)
-        layout.addWidget(self.rules_scroll, 1)
+        self.rules_list = QListWidget()
+        self.rules_list.setDragEnabled(True)
+        self.rules_list.setAcceptDrops(True)
+        self.rules_list.setDropIndicatorShown(True)
+        self.rules_list.setDragDropMode(QListWidget.InternalMove)
+        self.rules_list.setDefaultDropAction(Qt.MoveAction)
+        self.rules_list.setSelectionMode(QListWidget.SingleSelection)
+        self.rules_list.setSpacing(2)
+        self.rules_list.setAlternatingRowColors(False)
+        layout.addWidget(self.rules_list, 1)
 
         self.rule_count_label = QLabel("0 aktif kural")
         layout.addWidget(self.rule_count_label)
@@ -520,6 +555,9 @@ class MainWindow(QMainWindow):
 
         self.file_list.files_dropped.connect(self.add_paths)
         self.file_list.itemSelectionChanged.connect(self.on_file_selection_changed)
+        self.file_list.preview_requested.connect(self.open_file_preview_for_path)
+        self.file_list.diff_requested.connect(self.open_diff_preview_for_path)
+        self.rules_list.model().rowsMoved.connect(self._on_rules_reordered)
 
     def _apply_style(self) -> None:
         self.setFont(QFont("Segoe UI", 10))
@@ -601,6 +639,7 @@ class MainWindow(QMainWindow):
                 background-color: #fee2e2;
                 border-color: #fca5a5;
                 color: #7f1d1d;
+                padding: 2px 4px;
             }
             QProgressBar {
                 border: 1px solid #c7d3e6;
@@ -645,10 +684,11 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Dosya Seç",
-            "",
+            self._resolve_dialog_dir("add_files"),
             "Metin Dosyaları (*.txt *.md *.csv *.json *.yaml *.yml *.ini *.log *.xml *.html *.py);;Tüm Dosyalar (*.*)",
         )
         if files:
+            self._set_dialog_dir("add_files", str(Path(files[0]).parent))
             self.add_paths(files)
 
     def parse_extensions(self) -> List[str]:
@@ -670,9 +710,15 @@ class MainWindow(QMainWindow):
         return list(dict.fromkeys(result))
 
     def add_folder_dialog(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Klasör Seç")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Klasör Seç",
+            self._resolve_dialog_dir("add_folder"),
+        )
         if not folder:
             return
+
+        self._set_dialog_dir("add_folder", folder)
 
         base = Path(folder)
         recursive = self.cb_recursive.isChecked()
@@ -749,26 +795,41 @@ class MainWindow(QMainWindow):
         row.replace_edit.textChanged.connect(self.preview_selected_file)
         row.regex_cb.toggled.connect(self.preview_selected_file)
         row.case_cb.toggled.connect(self.preview_selected_file)
+        row.word_cb.toggled.connect(self.preview_selected_file)
         if preset:
             row.from_rule(preset)
 
-        self.rules_layout.insertWidget(max(0, self.rules_layout.count() - 1), row)
-        self.rule_rows.append(row)
+        item = QListWidgetItem()
+        item.setSizeHint(row.sizeHint())
+        self.rules_list.addItem(item)
+        self.rules_list.setItemWidget(item, row)
         self._update_rule_counter()
 
     def remove_rule(self, row_widget: QWidget) -> None:
-        if row_widget in self.rule_rows:
-            self.rule_rows.remove(row_widget)
-        row_widget.setParent(None)
-        row_widget.deleteLater()
+        for index in range(self.rules_list.count()):
+            item = self.rules_list.item(index)
+            if self.rules_list.itemWidget(item) is row_widget:
+                self.rules_list.takeItem(index)
+                row_widget.deleteLater()
+                break
         self._update_rule_counter()
 
     def clear_rules(self) -> None:
-        for row in self.rule_rows[:]:
-            self.remove_rule(row)
+        while self.rules_list.count():
+            item = self.rules_list.takeItem(0)
+            widget = self.rules_list.itemWidget(item)
+            if widget:
+                widget.deleteLater()
+        self._update_rule_counter()
 
     def collect_rules(self) -> List[ReplacementRule]:
-        return [row.to_rule() for row in self.rule_rows]
+        rules: List[ReplacementRule] = []
+        for index in range(self.rules_list.count()):
+            item = self.rules_list.item(index)
+            row = self.rules_list.itemWidget(item)
+            if isinstance(row, RuleRow):
+                rules.append(row.to_rule())
+        return rules
 
     def active_rules(self) -> List[ReplacementRule]:
         return [r for r in self.collect_rules() if r.enabled and r.find]
@@ -782,11 +843,13 @@ class MainWindow(QMainWindow):
         target, _ = QFileDialog.getSaveFileName(
             self,
             "Kural Setini Kaydet",
-            "ruleset.json",
+            str(Path(self._resolve_dialog_dir("export_rules")) / "ruleset.json"),
             "JSON (*.json)",
         )
         if not target:
             return
+
+        self._set_dialog_dir("export_rules", str(Path(target).parent))
 
         payload = {
             "version": RULESET_VERSION,
@@ -797,9 +860,16 @@ class MainWindow(QMainWindow):
         self.log(f"Kural seti kaydedildi: {target}")
 
     def import_rules(self) -> None:
-        source, _ = QFileDialog.getOpenFileName(self, "Kural Seti Seç", "", "JSON (*.json)")
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "Kural Seti Seç",
+            self._resolve_dialog_dir("import_rules"),
+            "JSON (*.json)",
+        )
         if not source:
             return
+
+        self._set_dialog_dir("import_rules", str(Path(source).parent))
 
         try:
             payload = json.loads(Path(source).read_text(encoding="utf-8"))
@@ -819,13 +889,34 @@ class MainWindow(QMainWindow):
         self.preview_file_content()
         self.preview_selected_file()
 
-    def preview_file_content(self) -> None:
-        current = self.file_list.currentItem()
-        if not current:
+    def _select_file_item(self, path_str: str) -> None:
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            if item.text() == path_str:
+                self.file_list.setCurrentItem(item)
+                return
+
+    def open_file_preview_for_path(self, path_str: str) -> None:
+        self._select_file_item(path_str)
+        self.preview_file_content(Path(path_str))
+        self.bottom_tabs.setCurrentWidget(self.file_preview_edit)
+
+    def open_diff_preview_for_path(self, path_str: str) -> None:
+        self._select_file_item(path_str)
+        self.preview_selected_file(Path(path_str), switch_tab=True)
+
+    def preview_file_content(self, file_path: Path | None = None) -> None:
+        if file_path is None:
+            current = self.file_list.currentItem()
+            if not current:
+                self.file_preview_edit.setPlainText("Dosya önizleme için listeden bir dosya seçin.")
+                return
+            file_path = Path(current.text())
+
+        if not file_path:
             self.file_preview_edit.setPlainText("Dosya önizleme için listeden bir dosya seçin.")
             return
 
-        file_path = Path(current.text())
         if not file_path.exists():
             self.file_preview_edit.setPlainText("Dosya mevcut değil.")
             return
@@ -864,9 +955,15 @@ class MainWindow(QMainWindow):
         html_lines.append("</pre>")
         return "".join(html_lines)
 
-    def preview_selected_file(self) -> None:
-        current = self.file_list.currentItem()
-        if not current:
+    def preview_selected_file(self, file_path: Path | None = None, switch_tab: bool = False) -> None:
+        if file_path is None:
+            current = self.file_list.currentItem()
+            if not current:
+                self.diff_edit.setPlainText("Diff önizleme için listeden bir dosya seçin.")
+                return
+            file_path = Path(current.text())
+
+        if not file_path:
             self.diff_edit.setPlainText("Diff önizleme için listeden bir dosya seçin.")
             return
 
@@ -875,7 +972,6 @@ class MainWindow(QMainWindow):
             self.diff_edit.setPlainText("Önizleme için en az bir aktif kural gerekli.")
             return
 
-        file_path = Path(current.text())
         if not file_path.exists():
             self.diff_edit.setPlainText("Dosya mevcut değil.")
             return
@@ -902,7 +998,8 @@ class MainWindow(QMainWindow):
                 diff_lines.append("\n... diff çıktısı kesildi (çok uzun) ...\n")
 
             self.diff_edit.setHtml(self.render_diff_html(diff_lines))
-            self.bottom_tabs.setCurrentWidget(self.diff_edit)
+            if switch_tab:
+                self.bottom_tabs.setCurrentWidget(self.diff_edit)
         except Exception as exc:
             self.diff_edit.setPlainText(f"Önizleme hatası: {exc}")
 
@@ -1022,6 +1119,7 @@ class MainWindow(QMainWindow):
                 "recursive": self.cb_recursive.isChecked(),
                 "extensions": self.ext_filter_edit.text(),
             },
+            "dialog_dirs": self.dialog_dirs,
             "files": files,
             "rules": rules,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -1047,6 +1145,13 @@ class MainWindow(QMainWindow):
         self.cb_recursive.setChecked(bool(opts.get("recursive", True)))
         self.ext_filter_edit.setText(opts.get("extensions", self.ext_filter_edit.text()))
 
+        loaded_dirs = data.get("dialog_dirs", {})
+        if isinstance(loaded_dirs, dict):
+            for key in self.dialog_dirs:
+                value = loaded_dirs.get(key, "")
+                if isinstance(value, str):
+                    self.dialog_dirs[key] = value
+
         for f in data.get("files", []):
             self._append_file(f)
 
@@ -1068,6 +1173,34 @@ class MainWindow(QMainWindow):
     def _on_rules_changed(self) -> None:
         self._update_rule_counter()
         self.preview_selected_file()
+
+    def _on_rules_reordered(self, *args) -> None:
+        self._update_rule_counter()
+        self.preview_selected_file()
+
+    def _program_default_dir(self) -> str:
+        cwd = Path.cwd()
+        if cwd.exists() and cwd.is_dir():
+            return str(cwd)
+        return str(Path(__file__).resolve().parent)
+
+    def _resolve_dialog_dir(self, key: str) -> str:
+        raw = self.dialog_dirs.get(key, "").strip()
+        if raw:
+            path = Path(raw)
+            if path.exists() and path.is_dir():
+                return str(path)
+        return self._program_default_dir()
+
+    def _set_dialog_dir(self, key: str, path_str: str) -> None:
+        path = Path(path_str)
+        if path.exists() and path.is_file():
+            path = path.parent
+
+        if path.exists() and path.is_dir():
+            self.dialog_dirs[key] = str(path)
+        else:
+            self.dialog_dirs[key] = self._program_default_dir()
 
     def closeEvent(self, event):
         if self.cb_remember.isChecked():

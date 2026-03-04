@@ -12,6 +12,7 @@ python -c "import PySide6; print(PySide6.__version__)"
 
 
 
+
 # TextMultiReplacer Pro
 
 Windows üzerinde çoklu metin dosyalarında, birden fazla dönüşüm kuralını tek tıklama ile uygulayan profesyonel masaüstü uygulaması.
