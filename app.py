@@ -244,10 +244,10 @@ class RuleRow(QWidget):
         layout.addWidget(self.word_cb)
 
         self.remove_btn = QPushButton("x")
+        self.remove_btn.setObjectName("RuleRemoveButton")
         self.remove_btn.setToolTip("Kuralı sil")
-        self.remove_btn.setProperty("danger", True)
         self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self))
-        self.remove_btn.setFixedSize(28, 24)
+        self.remove_btn.setFixedSize(16, 16)
         layout.addWidget(self.remove_btn)
 
     def to_rule(self) -> ReplacementRule:
@@ -635,6 +635,23 @@ class MainWindow(QMainWindow):
             QPushButton[primary="true"]:hover {
                 background-color: #0d6861;
             }
+            QPushButton#RuleRemoveButton {
+                background: transparent;
+                border: none;
+                color: #b91c1c;
+                padding: 0;
+                min-width: 16px;
+                max-width: 16px;
+                min-height: 16px;
+                max-height: 16px;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QPushButton#RuleRemoveButton:hover {
+                color: #7f1d1d;
+                background-color: #fee2e2;
+                border-radius: 8px;
+            }
             QPushButton[danger="true"] {
                 background-color: #fee2e2;
                 border-color: #fca5a5;
@@ -813,6 +830,7 @@ class MainWindow(QMainWindow):
                 row_widget.deleteLater()
                 break
         self._update_rule_counter()
+        self.preview_selected_file()
 
     def clear_rules(self) -> None:
         while self.rules_list.count():
@@ -821,6 +839,7 @@ class MainWindow(QMainWindow):
             if widget:
                 widget.deleteLater()
         self._update_rule_counter()
+        self.preview_selected_file()
 
     def collect_rules(self) -> List[ReplacementRule]:
         rules: List[ReplacementRule] = []
@@ -956,6 +975,9 @@ class MainWindow(QMainWindow):
         return "".join(html_lines)
 
     def preview_selected_file(self, file_path: Path | None = None, switch_tab: bool = False) -> None:
+        if switch_tab:
+            self.bottom_tabs.setCurrentWidget(self.diff_edit)
+
         if file_path is None:
             current = self.file_list.currentItem()
             if not current:
@@ -998,8 +1020,6 @@ class MainWindow(QMainWindow):
                 diff_lines.append("\n... diff çıktısı kesildi (çok uzun) ...\n")
 
             self.diff_edit.setHtml(self.render_diff_html(diff_lines))
-            if switch_tab:
-                self.bottom_tabs.setCurrentWidget(self.diff_edit)
         except Exception as exc:
             self.diff_edit.setPlainText(f"Önizleme hatası: {exc}")
 
