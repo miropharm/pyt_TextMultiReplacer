@@ -206,14 +206,24 @@ class ProcessorWorker(QObject):
 
 class RuleRow(QWidget):
     remove_requested = Signal(QWidget)
+    content_changed = Signal()
+    size_hint_changed = Signal(QWidget)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("RuleRow")
+        self._sync_guard = False
+        self.find_value = ""
+        self.replace_value = ""
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 2, 4, 2)
+        root.setSpacing(4)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
+        root.addLayout(layout)
 
         self.enabled_cb = QCheckBox()
         self.enabled_cb.setChecked(True)
@@ -234,7 +244,8 @@ class RuleRow(QWidget):
         self.replace_edit.setClearButtonEnabled(True)
         layout.addWidget(self.replace_edit, 2)
 
-        self.regex_cb = QCheckBox("Regex")
+        self.regex_cb = QCheckBox("R")
+        self.regex_cb.setToolTip("Regex (düzenli ifade)")
         self.case_cb = QCheckBox("Aa")
         self.case_cb.setToolTip("Büyük/küçük harfe duyarlı")
         self.word_cb = QCheckBox("W")
@@ -243,6 +254,12 @@ class RuleRow(QWidget):
         layout.addWidget(self.case_cb)
         layout.addWidget(self.word_cb)
 
+        self.expand_btn = QPushButton("▸")
+        self.expand_btn.setCheckable(True)
+        self.expand_btn.setToolTip("Çok satırlı düzenlemeyi aç/kapat")
+        self.expand_btn.setFixedSize(18, 18)
+        layout.addWidget(self.expand_btn)
+
         self.remove_btn = QPushButton("x")
         self.remove_btn.setObjectName("RuleRemoveButton")
         self.remove_btn.setToolTip("Kuralı sil")
@@ -250,10 +267,92 @@ class RuleRow(QWidget):
         self.remove_btn.setFixedSize(16, 16)
         layout.addWidget(self.remove_btn)
 
+        self.multiline_box = QGroupBox("Çok Satırlı Düzenleme")
+        self.multiline_box.setVisible(False)
+        multi = QFormLayout(self.multiline_box)
+        multi.setContentsMargins(8, 6, 8, 8)
+        multi.setSpacing(4)
+
+        self.find_multi = QTextEdit()
+        self.find_multi.setPlaceholderText("Bul (çok satırlı metin bloğu)")
+        self.find_multi.setFixedHeight(70)
+
+        self.replace_multi = QTextEdit()
+        self.replace_multi.setPlaceholderText("Değiştir (çok satırlı metin bloğu)")
+        self.replace_multi.setFixedHeight(70)
+
+        multi.addRow("Bul", self.find_multi)
+        multi.addRow("Değiştir", self.replace_multi)
+        root.addWidget(self.multiline_box)
+
+        self.find_edit.textEdited.connect(self._on_find_edit_changed)
+        self.replace_edit.textEdited.connect(self._on_replace_edit_changed)
+        self.find_multi.textChanged.connect(self._on_find_multi_changed)
+        self.replace_multi.textChanged.connect(self._on_replace_multi_changed)
+
+        self.enabled_cb.toggled.connect(lambda _: self.content_changed.emit())
+        self.regex_cb.toggled.connect(lambda _: self.content_changed.emit())
+        self.case_cb.toggled.connect(lambda _: self.content_changed.emit())
+        self.word_cb.toggled.connect(lambda _: self.content_changed.emit())
+        self.expand_btn.toggled.connect(self._toggle_multiline)
+
+    @staticmethod
+    def _single_line_preview(value: str) -> str:
+        if "\n" not in value:
+            return value
+
+        first = value.splitlines()[0] if value.splitlines() else ""
+        return f"{first} ..."
+
+    def _set_compact_texts(self) -> None:
+        self._sync_guard = True
+        self.find_edit.setText(self._single_line_preview(self.find_value))
+        self.replace_edit.setText(self._single_line_preview(self.replace_value))
+        self._sync_guard = False
+
+    def _set_multiline_texts(self) -> None:
+        self._sync_guard = True
+        self.find_multi.setPlainText(self.find_value)
+        self.replace_multi.setPlainText(self.replace_value)
+        self._sync_guard = False
+
+    def _on_find_edit_changed(self, text: str) -> None:
+        if self._sync_guard:
+            return
+        self.find_value = text
+        self._set_multiline_texts()
+        self.content_changed.emit()
+
+    def _on_replace_edit_changed(self, text: str) -> None:
+        if self._sync_guard:
+            return
+        self.replace_value = text
+        self._set_multiline_texts()
+        self.content_changed.emit()
+
+    def _on_find_multi_changed(self) -> None:
+        if self._sync_guard:
+            return
+        self.find_value = self.find_multi.toPlainText()
+        self._set_compact_texts()
+        self.content_changed.emit()
+
+    def _on_replace_multi_changed(self) -> None:
+        if self._sync_guard:
+            return
+        self.replace_value = self.replace_multi.toPlainText()
+        self._set_compact_texts()
+        self.content_changed.emit()
+
+    def _toggle_multiline(self, checked: bool) -> None:
+        self.multiline_box.setVisible(checked)
+        self.expand_btn.setText("▾" if checked else "▸")
+        self.size_hint_changed.emit(self)
+
     def to_rule(self) -> ReplacementRule:
         return ReplacementRule(
-            find=self.find_edit.text(),
-            replace=self.replace_edit.text(),
+            find=self.find_value,
+            replace=self.replace_value,
             use_regex=self.regex_cb.isChecked(),
             case_sensitive=self.case_cb.isChecked(),
             whole_word=self.word_cb.isChecked(),
@@ -261,12 +360,17 @@ class RuleRow(QWidget):
         )
 
     def from_rule(self, rule: ReplacementRule) -> None:
-        self.find_edit.setText(rule.find)
-        self.replace_edit.setText(rule.replace)
+        self.find_value = rule.find
+        self.replace_value = rule.replace
+        self._set_compact_texts()
+        self._set_multiline_texts()
         self.regex_cb.setChecked(rule.use_regex)
         self.case_cb.setChecked(rule.case_sensitive)
         self.word_cb.setChecked(getattr(rule, "whole_word", False))
         self.enabled_cb.setChecked(rule.enabled)
+
+        should_expand = "\n" in self.find_value or "\n" in self.replace_value
+        self.expand_btn.setChecked(should_expand)
 
 
 class FileListWidget(QListWidget):
@@ -807,12 +911,8 @@ class MainWindow(QMainWindow):
     def add_rule(self, preset: ReplacementRule | None = None) -> None:
         row = RuleRow()
         row.remove_requested.connect(self.remove_rule)
-        row.enabled_cb.toggled.connect(self._on_rules_changed)
-        row.find_edit.textChanged.connect(self._on_rules_changed)
-        row.replace_edit.textChanged.connect(self.preview_selected_file)
-        row.regex_cb.toggled.connect(self.preview_selected_file)
-        row.case_cb.toggled.connect(self.preview_selected_file)
-        row.word_cb.toggled.connect(self.preview_selected_file)
+        row.content_changed.connect(self._on_rules_changed)
+        row.size_hint_changed.connect(self._on_rule_row_size_hint_changed)
         if preset:
             row.from_rule(preset)
 
@@ -821,6 +921,14 @@ class MainWindow(QMainWindow):
         self.rules_list.addItem(item)
         self.rules_list.setItemWidget(item, row)
         self._update_rule_counter()
+
+    def _on_rule_row_size_hint_changed(self, row_widget: QWidget) -> None:
+        for index in range(self.rules_list.count()):
+            item = self.rules_list.item(index)
+            if self.rules_list.itemWidget(item) is row_widget:
+                item.setSizeHint(row_widget.sizeHint())
+                self.rules_list.doItemsLayout()
+                break
 
     def remove_rule(self, row_widget: QWidget) -> None:
         for index in range(self.rules_list.count()):
