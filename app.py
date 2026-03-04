@@ -367,9 +367,16 @@ class RuleRow(QWidget):
         self.size_hint_changed.emit(self)
 
     def to_rule(self) -> ReplacementRule:
+        # Eğer replace değeri boş veya sadece newline/whitespace içeriyorsa, boş string olarak kabul et
+        # Bu, kullanıcının "boş bırak = sil" beklentisini karşılar
+        # Not: Kullanıcı gerçekten boşluk ile değiştirmek istiyorsa, whitespace'li text yazmalı (örn: "a b")
+        replace_val = self.replace_value
+        if not replace_val or replace_val.strip() == "":
+            replace_val = ""
+        
         return ReplacementRule(
             find=self.find_value,
-            replace=self.replace_value,
+            replace=replace_val,
             use_regex=self.regex_cb.isChecked(),
             case_sensitive=self.case_cb.isChecked(),
             whole_word=self.word_cb.isChecked(),
@@ -1172,6 +1179,20 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.summary_label.setText("İşlem başladı...")
         self.log(f"İşlem başladı. Dosya: {len(files)}, Kural: {len(rules)}")
+        
+        # Debug: Her kuralın detayını logla
+        for i, rule in enumerate(rules, 1):
+            find_repr = repr(rule.find)
+            replace_repr = repr(rule.replace)
+            opts = []
+            if rule.use_regex:
+                opts.append("Regex")
+            if rule.case_sensitive:
+                opts.append("Case")
+            if rule.whole_word:
+                opts.append("Word")
+            opts_str = f" [{', '.join(opts)}]" if opts else ""
+            self.log(f"  Kural {i}: {find_repr} → {replace_repr}{opts_str}")
 
         self.worker_thread = QThread(self)
         self.worker = ProcessorWorker(
