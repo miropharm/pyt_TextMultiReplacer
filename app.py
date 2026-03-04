@@ -130,7 +130,12 @@ class ProcessorWorker(QObject):
     @staticmethod
     def apply_rules(content: str, rules: List[ReplacementRule]) -> tuple[str, int]:
         total_replacements = 0
-        current = content
+        newline_style = "\r\n" if "\r\n" in content else "\n"
+        current = (
+            content.replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\u2029", "\n")
+        )
 
         for rule in rules:
             if not rule.enabled or not rule.find:
@@ -155,6 +160,9 @@ class ProcessorWorker(QObject):
 
             current = updated
             total_replacements += count
+
+        if newline_style == "\r\n":
+            current = current.replace("\n", "\r\n")
 
         return current, total_replacements
 
@@ -246,10 +254,13 @@ class RuleRow(QWidget):
 
         self.regex_cb = QCheckBox("R")
         self.regex_cb.setToolTip("Regex (düzenli ifade)")
-        self.case_cb = QCheckBox("Aa")
-        self.case_cb.setToolTip("Büyük/küçük harfe duyarlı")
+        self.case_cb = QCheckBox("C")
+        self.case_cb.setToolTip("Case-sensitive (büyük/küçük harfe duyarlı)")
         self.word_cb = QCheckBox("W")
-        self.word_cb.setToolTip("Sadece tam kelime eşleşmesi")
+        self.word_cb.setToolTip("Whole word match (sadece tam kelime eşleşmesi)")
+        self.regex_cb.setFixedWidth(22)
+        self.case_cb.setFixedWidth(22)
+        self.word_cb.setFixedWidth(22)
         layout.addWidget(self.regex_cb)
         layout.addWidget(self.case_cb)
         layout.addWidget(self.word_cb)
@@ -304,6 +315,10 @@ class RuleRow(QWidget):
         first = value.splitlines()[0] if value.splitlines() else ""
         return f"{first} ..."
 
+    @staticmethod
+    def _normalize_user_text(value: str) -> str:
+        return value.replace("\r\n", "\n").replace("\r", "\n").replace("\u2029", "\n")
+
     def _set_compact_texts(self) -> None:
         self._sync_guard = True
         self.find_edit.setText(self._single_line_preview(self.find_value))
@@ -319,28 +334,28 @@ class RuleRow(QWidget):
     def _on_find_edit_changed(self, text: str) -> None:
         if self._sync_guard:
             return
-        self.find_value = text
+        self.find_value = self._normalize_user_text(text)
         self._set_multiline_texts()
         self.content_changed.emit()
 
     def _on_replace_edit_changed(self, text: str) -> None:
         if self._sync_guard:
             return
-        self.replace_value = text
+        self.replace_value = self._normalize_user_text(text)
         self._set_multiline_texts()
         self.content_changed.emit()
 
     def _on_find_multi_changed(self) -> None:
         if self._sync_guard:
             return
-        self.find_value = self.find_multi.toPlainText()
+        self.find_value = self._normalize_user_text(self.find_multi.toPlainText())
         self._set_compact_texts()
         self.content_changed.emit()
 
     def _on_replace_multi_changed(self) -> None:
         if self._sync_guard:
             return
-        self.replace_value = self.replace_multi.toPlainText()
+        self.replace_value = self._normalize_user_text(self.replace_multi.toPlainText())
         self._set_compact_texts()
         self.content_changed.emit()
 
@@ -360,8 +375,8 @@ class RuleRow(QWidget):
         )
 
     def from_rule(self, rule: ReplacementRule) -> None:
-        self.find_value = rule.find
-        self.replace_value = rule.replace
+        self.find_value = self._normalize_user_text(rule.find)
+        self.replace_value = self._normalize_user_text(rule.replace)
         self._set_compact_texts()
         self._set_multiline_texts()
         self.regex_cb.setChecked(rule.use_regex)
